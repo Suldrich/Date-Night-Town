@@ -1,0 +1,1546 @@
+import { useRef, useEffect, useState, useCallback } from "react";
+import HUD from "./HUD";
+import DateCard from "./DateCard";
+import Joystick from "./Joystick";
+import ShopNote, { type ShopData } from "./ShopNote";
+import Customizer, { type CharConfig, DEFAULT_CONFIG, loadConfig } from "./Customizer";
+import Casino from "./Casino";
+import { DATE_OPTIONS, type DateOption } from "./dateOptions";
+
+function useIsMobile() {
+  return "ontouchstart" in window || navigator.maxTouchPoints > 0;
+}
+
+const TILE = 64;
+const WORLD_W = 20;
+const WORLD_H = 20;
+const PLAYER_SPEED = 3.5;
+const ENTER_DISTANCE = 110;
+
+// ─── Static world data ────────────────────────────────────────────────────────
+
+const TREE_POSITIONS = [
+  // Corners
+  [100, 100], [1180, 100], [100, 1180], [1180, 1180],
+  // Edge midpoints
+  [640, 75], [640, 1205],
+  // (removed [75,640] for DIY shed; [1205,640] for casino on right path)
+  // Inner ring
+  [260, 200], [1020, 200], [260, 1080], [1020, 1080],
+  [200, 260], [1080, 260], [200, 1020], [1080, 1020],
+  // Diagonal fills
+  [390, 370], [890, 370], [390, 910], [890, 910],
+  // Extra scatter
+  [155, 430], [1125, 430], [155, 850], [1125, 850],
+  [430, 150], [850, 150], [430, 1130], [850, 1130],
+];
+
+// [x, y, color, type, scale]  type: "round" | "daisy" | "tulip" | "star" | "clover"
+const FLOWER_POSITIONS: [number, number, string, string, number][] = [
+  // Around plaza – mixed shapes
+  [540, 575, "#ff6b9d", "round",  1.0], [700, 575, "#a78bfa", "daisy",  1.1],
+  [540, 705, "#34d399", "star",   0.9], [700, 705, "#fde68a", "round",  1.0],
+  [575, 545, "#f87171", "daisy",  0.8], [705, 545, "#60a5fa", "tulip",  1.0],
+  [575, 735, "#e879f9", "clover", 1.1], [705, 735, "#fb923c", "star",   0.9],
+  [500, 640, "#ff6b9d", "clover", 1.0], [780, 640, "#a78bfa", "daisy",  1.0],
+  [640, 500, "#fde68a", "tulip",  1.2], [640, 780, "#34d399", "clover", 0.9],
+  // Path edges – vertical
+  [605, 350, "#ff6b9d", "daisy",  0.8], [675, 350, "#a78bfa", "round",  0.9],
+  [605, 450, "#fde68a", "tulip",  0.9], [675, 450, "#34d399", "star",   0.8],
+  [605, 800, "#f87171", "round",  0.9], [675, 800, "#60a5fa", "daisy",  0.8],
+  [605, 920, "#e879f9", "clover", 1.0], [675, 920, "#fb923c", "tulip",  0.9],
+  // Path edges – horizontal
+  [350, 605, "#ff6b9d", "star",   0.9], [350, 675, "#a78bfa", "round",  0.8],
+  [450, 605, "#34d399", "daisy",  1.0], [450, 675, "#fde68a", "tulip",  0.9],
+  [800, 605, "#f87171", "clover", 0.9], [800, 675, "#60a5fa", "star",   1.0],
+  [920, 605, "#e879f9", "round",  0.9], [920, 675, "#fb923c", "daisy",  0.8],
+  // Near date houses
+  [240, 350, "#ff6b9d", "tulip",  1.2], [360, 245, "#a78bfa", "daisy",  1.0],
+  [920, 245, "#fde68a", "star",   1.0], [1040,360, "#34d399", "round",  1.1],
+  [240, 920, "#f87171", "tulip",  1.0], [360,1040, "#60a5fa", "daisy",  1.1],
+  [920,1040, "#e879f9", "clover", 1.0], [1040,920, "#fb923c", "star",   1.2],
+  // Corner wildflower clusters (big)
+  [170, 170, "#ff6b9d", "daisy",  1.4], [195, 150, "#fbbf24", "star",   1.0],
+  [145, 195, "#a78bfa", "round",  1.1], [220, 190, "#34d399", "tulip",  0.9],
+  [1110,170, "#a78bfa", "daisy",  1.3], [1090,145, "#f87171", "clover", 1.0],
+  [1140,200, "#fde68a", "star",   1.1], [1060,200, "#60a5fa", "round",  0.9],
+  [170,1110, "#fde68a", "tulip",  1.3], [195,1140, "#e879f9", "daisy",  1.0],
+  [145,1080, "#34d399", "star",   1.0], [220,1085, "#fb923c", "round",  1.1],
+  [1110,1110,"#34d399", "daisy",  1.2], [1090,1140,"#ff6b9d", "tulip",  1.0],
+  [1140,1085,"#a78bfa", "clover", 1.1], [1060,1080,"#fbbf24", "star",   0.9],
+  // Mid-field wildflower scatters
+  [320, 490, "#f87171", "clover", 1.0], [960, 490, "#60a5fa", "round",  1.0],
+  [320, 790, "#e879f9", "star",   1.1], [960, 790, "#fb923c", "clover", 1.0],
+  [490, 320, "#ff6b9d", "daisy",  0.9], [790, 320, "#a78bfa", "round",  1.0],
+  [490, 960, "#fde68a", "tulip",  1.0], [790, 960, "#34d399", "star",   0.9],
+  // Extra diagonal fills
+  [380, 380, "#ff6b9d", "round",  0.8], [400, 415, "#fde68a", "daisy",  0.7],
+  [360, 405, "#a78bfa", "star",   0.7], [415, 360, "#34d399", "clover", 0.8],
+  [880, 380, "#34d399", "round",  0.8], [860, 415, "#f87171", "tulip",  0.8],
+  [900, 405, "#60a5fa", "daisy",  0.7], [840, 360, "#e879f9", "star",   0.8],
+  [380, 880, "#e879f9", "clover", 0.8], [415, 860, "#fb923c", "round",  0.7],
+  [360, 860, "#fde68a", "star",   0.8], [400, 840, "#a78bfa", "tulip",  0.7],
+  [880, 880, "#ff6b9d", "tulip",  0.8], [860, 860, "#a78bfa", "daisy",  0.7],
+  [900, 845, "#34d399", "clover", 0.8], [840, 855, "#fbbf24", "round",  0.7],
+  // DIY shed garden surroundings
+  [210, 580, "#4ade80", "clover", 1.1], [185, 660, "#86efac", "round",  0.9],
+  [230, 705, "#bbf7d0", "daisy",  0.9], [175, 610, "#ff6b9d", "tulip",  1.0],
+  [195, 700, "#fde68a", "star",   0.8], [225, 595, "#a78bfa", "clover", 0.8],
+  // Casino area glam
+  [1060,580, "#fbbf24", "star",   1.2], [1085,660, "#fb923c", "daisy",  1.0],
+  [1040,705, "#fde68a", "round",  0.9], [1070,615, "#e879f9", "star",   0.9],
+  // Cook house garden
+  [585, 225, "#ff6b9d", "tulip",  1.2], [695, 225, "#fde68a", "star",   1.0],
+  [615, 250, "#a78bfa", "daisy",  0.9], [665, 245, "#34d399", "clover", 0.9],
+  // Game night area
+  [585,1055, "#60a5fa", "clover", 1.0], [695,1055, "#0891b2", "round",  1.1],
+  [635,1045, "#a78bfa", "daisy",  0.9], [655,1070, "#f87171", "star",   0.8],
+  // Tiny accent clusters near lamps
+  [628, 370, "#fde68a", "star",   0.6], [652, 368, "#ff6b9d", "round",  0.6],
+  [368, 628, "#a78bfa", "clover", 0.6], [368, 652, "#34d399", "star",   0.6],
+  [812, 628, "#fbbf24", "round",  0.6], [812, 652, "#60a5fa", "daisy",  0.6],
+  [628, 812, "#e879f9", "star",   0.6], [652, 815, "#fb923c", "round",  0.6],
+];
+
+const LAMP_POSITIONS = [
+  // Vertical path
+  [640, 375], [640, 475], [640, 805], [640, 905],
+  // Horizontal path
+  [375, 640], [475, 640], [805, 640], [905, 640],
+];
+
+const BENCH_POSITIONS = [
+  // Around fountain, facing it
+  { x: 570, y: 690, rot: 0 },
+  { x: 710, y: 690, rot: 0 },
+  { x: 570, y: 605, rot: Math.PI },
+  { x: 710, y: 605, rot: Math.PI },
+];
+
+const SHOP_ENTER_DISTANCE = 85;
+
+interface SmallBuilding extends ShopData {
+  wx: number; wy: number;
+  wallColor: string; roofColor: string;
+}
+
+const SMALL_BUILDINGS: SmallBuilding[] = [
+  {
+    wx: 475, wy: 475,
+    wallColor: "#f9a8d4", roofColor: "#be185d",
+    label: "Flower Shop", emoji: "🌸", color: "#f9a8d4",
+    notes: [
+      "You make every room bloom 🌸",
+      "You're my favorite wildflower 💐",
+      "Life is rosy with you in it 🌹",
+      "You petal me with love every day 🌷",
+    ],
+  },
+  {
+    wx: 805, wy: 475,
+    wallColor: "#fcd34d", roofColor: "#b45309",
+    label: "Bakery", emoji: "🥐", color: "#fcd34d",
+    notes: [
+      "You're as cute as a croissant 🥐",
+      "I loaf you so much 🍞",
+      "You're the butter to my bread 🧈",
+      "Every day with you is a piece of cake 🎂",
+    ],
+  },
+  {
+    wx: 475, wy: 805,
+    wallColor: "#6ee7b7", roofColor: "#065f46",
+    label: "Candy Shop", emoji: "🍬", color: "#6ee7b7",
+    notes: [
+      "You're sweeter than anything in here 🍬",
+      "Life with you is pure confection 🍭",
+      "You make everything taste sweeter 🍫",
+      "I'm wrapped around your finger like a lollipop 🍭",
+    ],
+  },
+  {
+    wx: 805, wy: 805,
+    wallColor: "#c4b5fd", roofColor: "#5b21b6",
+    label: "Music Store", emoji: "🎵", color: "#c4b5fd",
+    notes: [
+      "You're my favorite song 🎵",
+      "Life's better with you in my playlist ♪",
+      "You're music to my ears 🎶",
+      "Without you I'd just be a broken record 🎵",
+    ],
+  },
+];
+
+// House world positions
+const HOUSE_POSITIONS: Record<string, { wx: number; wy: number }> = {
+  cinema:    { wx: 300, wy: 300 },
+  dinner:    { wx: 980, wy: 300 },
+  adventure: { wx: 300, wy: 980 },
+  spa:       { wx: 980, wy: 980 },
+  cook:      { wx: 640, wy: 180 },
+  gamenight: { wx: 640, wy: 1100 },
+  diy:       { wx: 160, wy: 640 },
+  casino:    { wx: 1120, wy: 640 },
+};
+
+// ─── Draw helpers ─────────────────────────────────────────────────────────────
+
+function drawGrass(ctx: CanvasRenderingContext2D) {
+  const totalW = WORLD_W * TILE;
+  const totalH = WORLD_H * TILE;
+
+  // Base grass with subtle texture
+  ctx.fillStyle = "#4ade80";
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  // Lighter patches for texture
+  ctx.fillStyle = "#57e88d";
+  for (let gx = 0; gx < WORLD_W; gx++) {
+    for (let gy = 0; gy < WORLD_H; gy++) {
+      if ((gx + gy) % 3 === 0) {
+        ctx.fillRect(gx * TILE + 8, gy * TILE + 8, TILE - 16, TILE - 16);
+      }
+    }
+  }
+
+  // Darker border forest
+  ctx.fillStyle = "#166534";
+  ctx.fillRect(-100, -100, totalW + 200, 100);
+  ctx.fillRect(-100, totalH, totalW + 200, 100);
+  ctx.fillRect(-100, 0, 100, totalH);
+  ctx.fillRect(totalW, 0, 100, totalH);
+
+  // Stone paths
+  ctx.fillStyle = "#d1d5db";
+  const cx = totalW / 2;
+  const cy = totalH / 2;
+  ctx.fillRect(cx - 26, 0, 52, totalH);
+  ctx.fillRect(0, cy - 26, totalW, 52);
+
+  // Path stones texture
+  ctx.fillStyle = "#c9cdd5";
+  for (let i = 0; i < 18; i++) {
+    ctx.fillRect(cx - 20, i * 72 + 10, 16, 52);
+    ctx.fillRect(cx + 4,  i * 72 + 36, 16, 52);
+    ctx.fillRect(i * 72 + 10, cy - 20, 52, 16);
+    ctx.fillRect(i * 72 + 36, cy + 4,  52, 16);
+  }
+
+  // Central plaza
+  ctx.fillStyle = "#e5e7eb";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 88, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Plaza stone ring
+  ctx.strokeStyle = "#d1d5db";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 82, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Fountain basin
+  ctx.fillStyle = "#9ca3af";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 40, 0, Math.PI * 2);
+  ctx.fill();
+  // Water
+  ctx.fillStyle = "#7dd3fc";
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 32, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  // Center pillar
+  ctx.fillStyle = "#6b7280";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#e2e8f0";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawTree(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.12)";
+  ctx.beginPath();
+  ctx.ellipse(x + 4, y + 12, 18, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Trunk
+  ctx.fillStyle = "#92400e";
+  ctx.fillRect(x - 7, y - 2, 14, 26);
+  // Canopy
+  ctx.fillStyle = "#15803d";
+  ctx.beginPath();
+  ctx.arc(x, y - 14, 28, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#16a34a";
+  ctx.beginPath();
+  ctx.arc(x - 4, y - 26, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#22c55e";
+  ctx.beginPath();
+  ctx.arc(x + 2, y - 38, 15, 0, Math.PI * 2);
+  ctx.fill();
+  // Highlight
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.beginPath();
+  ctx.arc(x - 8, y - 30, 10, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawFlower(ctx: CanvasRenderingContext2D, x: number, y: number, color: string, type = "round", scale = 1) {
+  const s = scale;
+  const hy = y - 17 * s;
+  // Stem
+  ctx.fillStyle = "#4ade80";
+  ctx.fillRect(x - 1.5 * s, y - 15 * s, 3 * s, 15 * s);
+
+  if (type === "round") {
+    ctx.fillStyle = color;
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * 6 * s, hy + Math.sin(a) * 6 * s, 4 * s, 4 * s, a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#fde68a";
+    ctx.beginPath(); ctx.arc(x, hy, 4 * s, 0, Math.PI * 2); ctx.fill();
+
+  } else if (type === "daisy") {
+    ctx.fillStyle = color;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      ctx.save(); ctx.translate(x, hy); ctx.rotate(a);
+      ctx.beginPath(); ctx.ellipse(0, -7 * s, 2.5 * s, 6 * s, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    ctx.fillStyle = "#fbbf24";
+    ctx.beginPath(); ctx.arc(x, hy, 4 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#92400e";
+    ctx.beginPath(); ctx.arc(x, hy, 2 * s, 0, Math.PI * 2); ctx.fill();
+
+  } else if (type === "tulip") {
+    ctx.fillStyle = color;
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * 5 * s, hy + Math.sin(a) * 4 * s, 5 * s, 7.5 * s, a - 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Leaf
+    ctx.fillStyle = "#4ade80";
+    ctx.beginPath();
+    ctx.ellipse(x + 6 * s, y - 7 * s, 2 * s, 6 * s, 0.6, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else if (type === "star") {
+    ctx.fillStyle = color;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      ctx.save(); ctx.translate(x, hy); ctx.rotate(a);
+      ctx.beginPath();
+      ctx.moveTo(0, -9 * s); ctx.lineTo(2 * s, -3 * s);
+      ctx.lineTo(0, -5 * s); ctx.lineTo(-2 * s, -3 * s);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    ctx.fillStyle = "#fde68a";
+    ctx.beginPath(); ctx.arc(x, hy, 3.5 * s, 0, Math.PI * 2); ctx.fill();
+
+  } else if (type === "clover") {
+    ctx.fillStyle = color;
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(x + Math.cos(a) * 5 * s, hy + Math.sin(a) * 5 * s, 4 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#16a34a";
+    ctx.beginPath(); ctx.arc(x, hy, 2.5 * s, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+const DOG_SPEED = 85;
+const DOG_PET_DISTANCE = 62;
+const DOG_EXCITE_DIST = 130;
+
+function drawDog(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number,
+  time: number,
+  happyTimer: number,
+  facing: number,
+) {
+  ctx.save();
+  ctx.translate(x, y);
+  if (facing < 0) ctx.scale(-1, 1);
+  const t = time / 1000;
+  const moving = true;
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
+  ctx.beginPath();
+  ctx.ellipse(2, 8, 17, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Wagging tail
+  const wag = Math.sin(t * (happyTimer > 0 ? 14 : 7)) * 0.55;
+  ctx.save();
+  ctx.translate(-13, -7);
+  ctx.rotate(wag);
+  ctx.fillStyle = "#b45309";
+  ctx.beginPath();
+  ctx.ellipse(0, -7, 3, 7, 0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Back legs
+  const legB = Math.sin(t * 6 + Math.PI) * 3;
+  ctx.fillStyle = "#b45309";
+  ctx.fillRect(-9, 2 + legB, 5, 9);
+  ctx.fillRect(-2, 2 - legB, 5, 9);
+  // Paws (back)
+  ctx.fillStyle = "#fde68a";
+  ctx.beginPath(); ctx.arc(-7, 11 + legB, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(1, 11 - legB, 3, 0, Math.PI * 2); ctx.fill();
+
+  // Body
+  ctx.fillStyle = "#d97706";
+  ctx.beginPath();
+  ctx.ellipse(0, -4, 15, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Belly patch
+  ctx.fillStyle = "#fde68a";
+  ctx.beginPath();
+  ctx.ellipse(2, -2, 9, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Front legs
+  const legF = Math.sin(t * 6) * 3;
+  ctx.fillStyle = "#b45309";
+  ctx.fillRect(8,  2 + legF, 5, 9);
+  ctx.fillRect(15, 2 - legF, 5, 9);
+  // Paws (front)
+  ctx.fillStyle = "#fde68a";
+  ctx.beginPath(); ctx.arc(10, 11 + legF, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(17, 11 - legF, 3, 0, Math.PI * 2); ctx.fill();
+
+  // Neck
+  ctx.fillStyle = "#d97706";
+  ctx.beginPath(); ctx.arc(14, -9, 7, 0, Math.PI * 2); ctx.fill();
+
+  // Floppy ear (behind head)
+  ctx.fillStyle = "#92400e";
+  ctx.save();
+  ctx.translate(12, -13);
+  ctx.rotate(-0.15 + Math.sin(t * 2.5) * 0.06);
+  ctx.beginPath(); ctx.ellipse(0, 6, 5, 9, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  // Head
+  ctx.fillStyle = "#d97706";
+  ctx.beginPath(); ctx.arc(16, -13, 11, 0, Math.PI * 2); ctx.fill();
+
+  // Snout
+  ctx.fillStyle = "#fde68a";
+  ctx.beginPath(); ctx.ellipse(23, -11, 6, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Nose
+  ctx.fillStyle = "#1c1917";
+  ctx.beginPath(); ctx.arc(27, -12, 2.5, 0, Math.PI * 2); ctx.fill();
+
+  // Eye
+  ctx.fillStyle = "#1c1917";
+  ctx.beginPath(); ctx.arc(19, -16, 3.2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.arc(20, -17, 1.3, 0, Math.PI * 2); ctx.fill();
+
+  // Tongue
+  if (happyTimer > 0 || Math.sin(t * 0.9) > 0.75) {
+    ctx.fillStyle = "#f87171";
+    ctx.beginPath(); ctx.ellipse(26, -8, 3, 4.5, 0.1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fca5a5";
+    ctx.beginPath(); ctx.arc(26, -6, 1.5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Floating hearts when happy
+  if (happyTimer > 0) {
+    for (let i = 0; i < 4; i++) {
+      const hx = -12 + i * 11 + Math.sin(t * 3 + i * 1.5) * 5;
+      const hy2 = -30 - (1 - happyTimer) * 45;
+      ctx.globalAlpha = Math.min(1, happyTimer * 2);
+      ctx.font = `${10 + i * 3}px serif`;
+      ctx.textAlign = "center";
+      ctx.fillText(i % 2 === 0 ? "❤️" : "💕", hx, hy2);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
+}
+
+function drawBush(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.fillStyle = "#15803d";
+  ctx.beginPath();
+  ctx.arc(x - 10, y, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#16a34a";
+  ctx.beginPath();
+  ctx.arc(x + 8, y, 12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#22c55e";
+  ctx.beginPath();
+  ctx.arc(x, y - 8, 13, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawLamp(ctx: CanvasRenderingContext2D, x: number, y: number, time: number) {
+  const pulse = 0.6 + Math.sin(time * 0.001) * 0.08;
+  // Glow on ground
+  ctx.save();
+  ctx.globalAlpha = 0.18 * pulse;
+  const grad = ctx.createRadialGradient(x, y, 0, x, y, 55);
+  grad.addColorStop(0, "#fde68a");
+  grad.addColorStop(1, "transparent");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(x, y, 55, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  // Pole
+  ctx.fillStyle = "#374151";
+  ctx.fillRect(x - 3, y - 55, 6, 55);
+  // Arm
+  ctx.fillStyle = "#374151";
+  ctx.fillRect(x - 3, y - 55, 16, 5);
+  // Lamp head
+  ctx.fillStyle = "#1f2937";
+  ctx.fillRect(x + 7, y - 62, 18, 14);
+  // Light
+  ctx.fillStyle = "#fde68a";
+  ctx.globalAlpha = pulse;
+  ctx.beginPath();
+  ctx.arc(x + 16, y - 55, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawBench(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  // Legs
+  ctx.fillStyle = "#78350f";
+  ctx.fillRect(x - 24, y - 4, 6, 14);
+  ctx.fillRect(x + 18, y - 4, 6, 14);
+  // Back support
+  ctx.fillStyle = "#92400e";
+  ctx.fillRect(x - 26, y - 18, 52, 5);
+  // Seat
+  ctx.fillStyle = "#a16207";
+  ctx.fillRect(x - 26, y - 4, 52, 7);
+  // Seat highlight
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(x - 26, y - 4, 52, 2);
+}
+
+function drawSmallBuilding(ctx: CanvasRenderingContext2D, b: SmallBuilding, isNear = false) {
+  const { wx, wy, wallColor, roofColor, label, emoji, color } = b;
+
+  if (isNear) {
+    const pulse = 0.2 + Math.abs(Math.sin(Date.now() * 0.004)) * 0.15;
+    const grad = ctx.createRadialGradient(wx, wy + 10, 0, wx, wy + 10, 55);
+    grad.addColorStop(0, color + "99");
+    grad.addColorStop(1, "transparent");
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(wx, wy + 10, 55, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  const w = 68;
+  const h = 55;
+  const x = wx - w / 2;
+  const y = wy - h / 2;
+
+  // Foundation
+  ctx.fillStyle = "#d4c5a9";
+  ctx.fillRect(x - 3, y + h - 5, w + 6, 12);
+
+  // Walls
+  ctx.fillStyle = wallColor;
+  ctx.fillRect(x, y + 14, w, h - 14);
+
+  // Wall shadow
+  ctx.fillStyle = "rgba(0,0,0,0.1)";
+  ctx.fillRect(x + w - 12, y + 14, 12, h - 14);
+
+  // Awning
+  ctx.fillStyle = roofColor;
+  ctx.fillRect(x - 6, y + 18, w + 12, 10);
+  // Awning stripes
+  ctx.fillStyle = "rgba(255,255,255,0.2)";
+  for (let i = 0; i < 5; i++) {
+    ctx.fillRect(x - 6 + i * 16, y + 18, 8, 10);
+  }
+
+  // Door
+  ctx.fillStyle = "#2d1b0e";
+  ctx.fillRect(wx - 9, y + h - 25, 18, 25);
+
+  // Window
+  ctx.fillStyle = "#bae6fd";
+  ctx.globalAlpha = 0.85;
+  ctx.fillRect(x + 8, y + 28, 16, 14);
+  ctx.fillRect(x + w - 24, y + 28, 16, 14);
+  ctx.globalAlpha = 1;
+
+  // Roof triangle
+  ctx.fillStyle = roofColor;
+  ctx.beginPath();
+  ctx.moveTo(x - 8, y + 16);
+  ctx.lineTo(wx, y - 18);
+  ctx.lineTo(x + w + 8, y + 16);
+  ctx.closePath();
+  ctx.fill();
+
+  // Sign plank
+  ctx.fillStyle = "#fef3c7";
+  ctx.fillRect(wx - 22, y + 5, 44, 12);
+  ctx.fillStyle = "#1e1b4b";
+  ctx.font = "bold 7px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(label, wx, y + 14);
+
+  // Emoji above
+  ctx.font = "14px serif";
+  ctx.fillText(emoji, wx, y - 22);
+}
+
+function drawHouse(
+  ctx: CanvasRenderingContext2D,
+  wx: number,
+  wy: number,
+  option: DateOption,
+  isNear: boolean,
+  time: number
+) {
+  const w = 96;
+  const h = 80;
+  const x = wx - w / 2;
+  const y = wy - h / 2;
+
+  if (isNear) {
+    const pulse = 0.25 + Math.abs(Math.sin(time * 0.004)) * 0.2;
+    const grad = ctx.createRadialGradient(wx, wy + 20, 0, wx, wy + 20, 80);
+    grad.addColorStop(0, option.color + "99");
+    grad.addColorStop(1, "transparent");
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(wx, wy + 20, 80, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Foundation
+  ctx.fillStyle = "#d4c5a9";
+  ctx.fillRect(x - 4, y + h - 8, w + 8, 18);
+
+  // Walls
+  ctx.fillStyle = option.color;
+  ctx.fillRect(x, y + 16, w, h - 16);
+
+  // Wall shadow
+  ctx.fillStyle = "rgba(0,0,0,0.15)";
+  ctx.fillRect(x + w - 18, y + 16, 18, h - 16);
+
+  // Door
+  ctx.fillStyle = "#2d1b0e";
+  ctx.fillRect(wx - 14, y + h - 36, 28, 36);
+  // Door arch
+  ctx.fillStyle = "#2d1b0e";
+  ctx.beginPath();
+  ctx.arc(wx, y + h - 36, 14, Math.PI, 0);
+  ctx.fill();
+
+  // Door knob
+  ctx.fillStyle = "#fcd34d";
+  ctx.beginPath();
+  ctx.arc(wx + 9, y + h - 18, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Windows with glow tint
+  const winColor = isNear ? "#fde68a" : "#93c5fd";
+  ctx.fillStyle = winColor;
+  ctx.globalAlpha = 0.85;
+  ctx.fillRect(x + 10, y + 28, 22, 22);
+  ctx.fillRect(x + w - 32, y + 28, 22, 22);
+  ctx.globalAlpha = 1;
+
+  // Window frames
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x + 10, y + 28, 22, 22);
+  ctx.strokeRect(x + w - 32, y + 28, 22, 22);
+
+  // Window cross
+  ctx.beginPath();
+  ctx.moveTo(x + 21, y + 28); ctx.lineTo(x + 21, y + 50);
+  ctx.moveTo(x + 10, y + 39); ctx.lineTo(x + 32, y + 39);
+  ctx.moveTo(x + w - 21, y + 28); ctx.lineTo(x + w - 21, y + 50);
+  ctx.moveTo(x + w - 32, y + 39); ctx.lineTo(x + w - 10, y + 39);
+  ctx.stroke();
+
+  // Roof
+  ctx.fillStyle = option.roofColor;
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y + 18);
+  ctx.lineTo(wx, y - 32);
+  ctx.lineTo(x + w + 12, y + 18);
+  ctx.closePath();
+  ctx.fill();
+  // Roof highlight
+  ctx.fillStyle = "rgba(255,255,255,0.1)";
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y + 18);
+  ctx.lineTo(wx, y - 32);
+  ctx.lineTo(wx, y + 18);
+  ctx.closePath();
+  ctx.fill();
+
+  // Chimney
+  ctx.fillStyle = "#6b7280";
+  ctx.fillRect(x + w - 28, y - 22, 14, 24);
+  ctx.fillStyle = "#4b5563";
+  ctx.fillRect(x + w - 30, y - 22, 18, 5);
+
+  // Sign
+  ctx.fillStyle = "#fef3c7";
+  ctx.fillRect(wx - 32, y + 3, 64, 14);
+  ctx.fillStyle = "#1e1b4b";
+  ctx.font = "bold 9px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(option.name, wx, y + 13);
+
+  // Emoji
+  ctx.font = "22px serif";
+  ctx.fillText(option.emoji, wx, y - 38);
+}
+
+function drawShed(
+  ctx: CanvasRenderingContext2D,
+  option: DateOption,
+  wx: number,
+  wy: number,
+  isNear: boolean,
+  time: number,
+) {
+  const w = 96, h = 62;
+  const x = wx - w / 2;
+  const y = wy - h;
+
+  // Glow when near
+  if (isNear) {
+    ctx.shadowColor = "#84cc16";
+    ctx.shadowBlur = 22 + Math.sin(time * 4) * 6;
+  }
+
+  // Foundation
+  ctx.fillStyle = "#713f12";
+  ctx.fillRect(x - 2, y + h - 4, w + 4, 6);
+
+  // Walls — wood planks (warm brown)
+  ctx.fillStyle = "#92400e";
+  ctx.fillRect(x, y, w, h);
+
+  // Wood plank lines
+  ctx.strokeStyle = "#78350f";
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 5; i++) {
+    const py2 = y + i * 12 + 6;
+    ctx.beginPath();
+    ctx.moveTo(x, py2);
+    ctx.lineTo(x + w, py2);
+    ctx.stroke();
+  }
+  // Vertical plank dividers
+  ctx.strokeStyle = "#6b3009";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 5; i++) {
+    const px2 = x + i * (w / 5);
+    ctx.beginPath();
+    ctx.moveTo(px2, y);
+    ctx.lineTo(px2, y + h);
+    ctx.stroke();
+  }
+
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+
+  // Shed roof — asymmetric (taller on left, slopes right)
+  ctx.fillStyle = option.roofColor;
+  ctx.beginPath();
+  ctx.moveTo(x - 8, y);             // bottom left
+  ctx.lineTo(wx - 10, y - 36);      // peak (left of center)
+  ctx.lineTo(x + w + 8, y + 6);     // bottom right
+  ctx.closePath();
+  ctx.fill();
+
+  // Roof trim
+  ctx.strokeStyle = "#1c3a0b";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Door — arched, wooden
+  ctx.fillStyle = "#5c2d09";
+  ctx.beginPath();
+  ctx.roundRect(wx - 10, y + h - 30, 20, 30, [5, 5, 0, 0]);
+  ctx.fill();
+  // Door hinge
+  ctx.fillStyle = "#ca8a04";
+  ctx.fillRect(wx - 8, y + h - 24, 3, 10);
+
+  // Window — with flower box
+  const winX = x + 12, winY = y + 8;
+  ctx.fillStyle = "#bef264";
+  ctx.fillRect(winX, winY, 22, 16);
+  ctx.strokeStyle = "#78350f";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(winX, winY, 22, 16);
+  // Pane cross
+  ctx.beginPath();
+  ctx.moveTo(winX + 11, winY); ctx.lineTo(winX + 11, winY + 16);
+  ctx.moveTo(winX, winY + 8);  ctx.lineTo(winX + 22, winY + 8);
+  ctx.stroke();
+  // Flower box under window
+  ctx.fillStyle = "#78350f";
+  ctx.fillRect(winX - 2, winY + 16, 26, 6);
+  // Flowers in box
+  const boxFlowers = ["#f43f5e", "#fbbf24", "#a78bfa", "#34d399", "#60a5fa"];
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = boxFlowers[i % boxFlowers.length];
+    ctx.beginPath();
+    ctx.arc(winX + 2 + i * 5, winY + 14, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Garden tools leaning against right wall
+  const toolX = x + w - 14;
+  // Rake/shovel handle
+  ctx.strokeStyle = "#92400e";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(toolX, y + h);
+  ctx.lineTo(toolX - 8, y + 10);
+  ctx.stroke();
+  // Rake head
+  ctx.fillStyle = "#6b7280";
+  ctx.fillRect(toolX - 16, y + 10, 18, 4);
+  ctx.strokeStyle = "#4b5563";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(toolX - 14 + i * 5, y + 14);
+    ctx.lineTo(toolX - 14 + i * 5, y + 20);
+    ctx.stroke();
+  }
+  // Second tool
+  ctx.strokeStyle = "#92400e";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(toolX + 8, y + h);
+  ctx.lineTo(toolX + 3, y + 14);
+  ctx.stroke();
+  ctx.fillStyle = "#b45309";
+  ctx.fillRect(toolX - 1, y + 12, 12, 8);
+
+  // Small garden patch in front
+  ctx.fillStyle = "#713f12";
+  ctx.fillRect(wx - 24, wy + 4, 48, 12);
+  ctx.strokeStyle = "#92400e";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(wx - 24, wy + 4, 48, 12);
+  // Seedlings
+  for (let i = 0; i < 4; i++) {
+    const sx = wx - 18 + i * 12;
+    ctx.fillStyle = "#4ade80";
+    ctx.fillRect(sx - 1, wy + 2, 2, 10);
+    ctx.beginPath();
+    ctx.arc(sx, wy + 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Vines on left edge
+  ctx.strokeStyle = "#16a34a";
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    const vy = y + 10 + i * 16;
+    ctx.beginPath();
+    ctx.moveTo(x, vy);
+    ctx.quadraticCurveTo(x - 8, vy + 6, x - 3, vy + 12);
+    ctx.stroke();
+    ctx.fillStyle = "#22c55e";
+    ctx.beginPath();
+    ctx.arc(x - 6, vy + 8, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Sign
+  ctx.fillStyle = "#fef3c7";
+  ctx.fillRect(wx - 30, y + h - 52, 60, 14);
+  ctx.fillStyle = "#14532d";
+  ctx.font = "bold 8px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(option.name, wx, y + h - 41);
+
+  // Emoji
+  ctx.font = "22px serif";
+  ctx.fillText(option.emoji, wx, y - 42);
+}
+
+function drawCasino(
+  ctx: CanvasRenderingContext2D,
+  option: DateOption,
+  wx: number,
+  wy: number,
+  isNear: boolean,
+  time: number,
+) {
+  const w = 100, h = 70;
+  const x = wx - w / 2;
+  const y = wy - h;
+
+  // Pulsing neon glow
+  const pulse = Math.sin(time * 3) * 0.5 + 0.5;
+  if (isNear) {
+    ctx.shadowColor = "#fbbf24";
+    ctx.shadowBlur = 28 + pulse * 12;
+  } else {
+    ctx.shadowColor = "#fbbf24";
+    ctx.shadowBlur = 8 + pulse * 6;
+  }
+
+  // Foundation
+  ctx.fillStyle = "#1c1917";
+  ctx.fillRect(x - 3, y + h - 4, w + 6, 6);
+
+  // Walls — dark purple/maroon
+  ctx.fillStyle = "#1c0533";
+  ctx.fillRect(x, y, w, h);
+
+  // Gold trim on walls
+  ctx.strokeStyle = "#fbbf24";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 4, y + 4, w - 8, h - 8);
+
+  // Decorative gold diamonds pattern
+  ctx.fillStyle = "#fbbf2422";
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 2; j++) {
+      const dx2 = x + 14 + i * 28, dy2 = y + 12 + j * 26;
+      ctx.save();
+      ctx.translate(dx2, dy2);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillRect(-6, -6, 12, 12);
+      ctx.restore();
+    }
+  }
+
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+
+  // Fancy roof — flat top with gold crenellations
+  ctx.fillStyle = "#3b0764";
+  ctx.fillRect(x - 8, y - 14, w + 16, 18);
+  // Crenellations
+  ctx.fillStyle = "#fbbf24";
+  for (let i = 0; i < 7; i++) {
+    ctx.fillRect(x - 6 + i * 16, y - 22, 10, 12);
+  }
+  // Roof trim
+  ctx.strokeStyle = "#fbbf24";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x - 8, y - 14, w + 16, 18);
+
+  // Marquee sign — neon
+  const signW = 76, signH = 18;
+  const sx = wx - signW / 2, sy = y + 6;
+  ctx.fillStyle = "#0f0320";
+  ctx.fillRect(sx, sy, signW, signH);
+  ctx.strokeStyle = `rgba(251,191,36,${0.6 + pulse * 0.4})`;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(sx, sy, signW, signH);
+  // Marquee dots
+  for (let i = 0; i < 8; i++) {
+    ctx.fillStyle = i % 2 === Math.floor(time * 3) % 2
+      ? "#fbbf24" : "#78350f";
+    ctx.beginPath();
+    ctx.arc(sx + 5 + i * 9, sy + 9, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#fbbf24";
+  ctx.font = "bold 8px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("CASINO", wx, sy + 12);
+
+  // Door — velvet red
+  ctx.fillStyle = "#7f1d1d";
+  ctx.fillRect(wx - 11, y + h - 32, 22, 32);
+  ctx.strokeStyle = "#fbbf24";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(wx - 11, y + h - 32, 22, 32);
+  // Door handle
+  ctx.fillStyle = "#fbbf24";
+  ctx.beginPath();
+  ctx.arc(wx + 6, y + h - 16, 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Windows — glowing purple
+  for (const wox of [-32, 28]) {
+    const winX = wx + wox, winY = y + 16;
+    ctx.fillStyle = `rgba(139,92,246,${0.4 + pulse * 0.3})`;
+    ctx.fillRect(winX, winY, 16, 14);
+    ctx.strokeStyle = "#fbbf24";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(winX, winY, 16, 14);
+  }
+
+  // Stars / sparkles floating above
+  for (let i = 0; i < 4; i++) {
+    const angle = time * 1.5 + i * (Math.PI / 2);
+    const starX = wx + Math.cos(angle) * 28;
+    const starY = (y - 30) + Math.sin(angle * 2) * 6;
+    ctx.fillStyle = `rgba(251,191,36,${0.5 + Math.sin(angle * 3) * 0.4})`;
+    ctx.font = "10px serif";
+    ctx.fillText("✦", starX, starY);
+  }
+
+  // Emoji above
+  ctx.font = "22px serif";
+  ctx.textAlign = "center";
+  ctx.fillText(option.emoji, wx, y - 30);
+}
+
+function drawPlayer(
+  ctx: CanvasRenderingContext2D,
+  px: number,
+  py: number,
+  bobY: number,
+  config: CharConfig,
+) {
+  ctx.save();
+  ctx.translate(px, py + bobY);
+
+  // Name tag above head
+  if (config.name) {
+    ctx.font = "bold 11px sans-serif";
+    ctx.textAlign = "center";
+    const tw = ctx.measureText(config.name).width + 10;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath();
+    ctx.roundRect(-tw / 2, -54, tw, 16, 5);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(config.name, 0, -41);
+  }
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.beginPath();
+  ctx.ellipse(0, 15, 17, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Legs
+  ctx.fillStyle = "#6366f1";
+  ctx.fillRect(-10, 8, 9, 16);
+  ctx.fillRect(1, 8, 9, 16);
+
+  // Body
+  ctx.fillStyle = config.bodyColor;
+  ctx.fillRect(-14, -10, 28, 22);
+  ctx.fillStyle = "rgba(255,255,255,0.2)";
+  ctx.fillRect(-14, -10, 9, 22);
+
+  // Head
+  ctx.fillStyle = "#fde68a";
+  ctx.fillRect(-13, -30, 26, 24);
+
+  // Hair
+  ctx.fillStyle = config.hairColor;
+  ctx.fillRect(-13, -34, 26, 13);
+  // Hair wisp
+  ctx.fillRect(-16, -34, 6, 10);
+
+  // Eyes
+  ctx.fillStyle = "#1e1b4b";
+  ctx.fillRect(-7, -21, 5, 6);
+  ctx.fillRect(2, -21, 5, 6);
+  // Eye shine
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(-6, -21, 2, 2);
+  ctx.fillRect(3, -21, 2, 2);
+
+  // Blush
+  ctx.fillStyle = "rgba(255,100,100,0.35)";
+  ctx.beginPath();
+  ctx.arc(-9, -13, 4, 0, Math.PI * 2);
+  ctx.arc(9, -13, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ─── Game component ───────────────────────────────────────────────────────────
+
+export default function Game() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stateRef = useRef({
+    playerX: 640,
+    playerY: 640,
+    keys: new Set<string>(),
+    bobTime: 0,
+    bobY: 0,
+    facingAngle: 0,
+    time: 0,
+  });
+  const joystickRef = useRef({ dx: 0, dy: 0 });
+  const isMobile = useIsMobile();
+  const [nearOption, setNearOption] = useState<DateOption | null>(null);
+  const [activeOption, setActiveOption] = useState<DateOption | null>(null);
+  const nearOptionRef = useRef<DateOption | null>(null);
+  const activeOptionRef = useRef<DateOption | null>(null);
+  const [nearShop, setNearShop] = useState<SmallBuilding | null>(null);
+  const [activeShop, setActiveShop] = useState<SmallBuilding | null>(null);
+  const nearShopRef = useRef<SmallBuilding | null>(null);
+  const activeShopRef = useRef<SmallBuilding | null>(null);
+  const animRef = useRef<number>(0);
+  const [charConfig, setCharConfig] = useState<CharConfig>(() => loadConfig());
+  const charConfigRef = useRef<CharConfig>(charConfig);
+  const [customizerOpen, setCustomizerOpen] = useState(false);
+  const [casinoOpen, setCasinoOpen] = useState(false);
+  const dogRef = useRef({ x: 530, y: 420, vx: 55, vy: 30, wanderTimer: 2.5, happyTimer: 0, facing: 1 });
+  const [nearDog, setNearDog] = useState(false);
+  const nearDogRef = useRef(false);
+
+  const handleJoystick = useCallback((dx: number, dy: number) => {
+    joystickRef.current = { dx, dy };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.type === "keydown") {
+        stateRef.current.keys.add(e.code);
+        if (e.code === "KeyE") {
+          if (nearDogRef.current && !activeOptionRef.current && !activeShopRef.current) {
+            dogRef.current.happyTimer = 1.8;
+          } else if (nearOptionRef.current && !activeOptionRef.current && !activeShopRef.current) {
+            setActiveOption(nearOptionRef.current);
+            activeOptionRef.current = nearOptionRef.current;
+          } else if (nearShopRef.current && !activeShopRef.current && !activeOptionRef.current) {
+            setActiveShop(nearShopRef.current);
+            activeShopRef.current = nearShopRef.current;
+          }
+        }
+        if (e.code === "Escape") {
+          if (activeOptionRef.current) { setActiveOption(null); activeOptionRef.current = null; }
+          if (activeShopRef.current)   { setActiveShop(null);   activeShopRef.current = null; }
+        }
+      } else {
+        stateRef.current.keys.delete(e.code);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+    };
+  }, []);
+
+  useEffect(() => { activeOptionRef.current = activeOption; }, [activeOption]);
+  useEffect(() => { activeShopRef.current = activeShop; }, [activeShop]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const resize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    let last = performance.now();
+
+    const loop = (now: number) => {
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      const s = stateRef.current;
+      s.time = now;
+
+      const paused = !!activeOptionRef.current || !!activeShopRef.current;
+
+      if (!paused) {
+        let dx = joystickRef.current.dx;
+        let dy = joystickRef.current.dy;
+        if (s.keys.has("KeyW") || s.keys.has("ArrowUp"))    dy -= 1;
+        if (s.keys.has("KeyS") || s.keys.has("ArrowDown"))  dy += 1;
+        if (s.keys.has("KeyA") || s.keys.has("ArrowLeft"))  dx -= 1;
+        if (s.keys.has("KeyD") || s.keys.has("ArrowRight")) dx += 1;
+
+        const moving = dx !== 0 || dy !== 0;
+        if (moving) {
+          const len = Math.sqrt(dx * dx + dy * dy);
+          dx /= len; dy /= len;
+          s.facingAngle = Math.atan2(dx, -dy);
+          s.bobTime += dt * 8;
+          s.bobY = Math.abs(Math.sin(s.bobTime)) * -5;
+        } else {
+          s.bobY = s.bobY * 0.8;
+        }
+
+        const speed = PLAYER_SPEED * TILE * dt;
+        const worldSize = WORLD_W * TILE;
+        s.playerX = Math.max(48, Math.min(worldSize - 48, s.playerX + dx * speed));
+        s.playerY = Math.max(48, Math.min(worldSize - 48, s.playerY + dy * speed));
+
+        let found: DateOption | null = null;
+        let foundDist = Infinity;
+        for (const opt of DATE_OPTIONS) {
+          const hp = HOUSE_POSITIONS[opt.id];
+          if (!hp) continue;
+          const d = Math.hypot(s.playerX - hp.wx, s.playerY - hp.wy);
+          if (d < ENTER_DISTANCE && d < foundDist) {
+            foundDist = d;
+            found = opt;
+          }
+        }
+        if (found?.id !== nearOptionRef.current?.id) {
+          nearOptionRef.current = found;
+          setNearOption(found);
+        }
+
+        // Shop proximity
+        let foundShop: SmallBuilding | null = null;
+        let foundShopDist = Infinity;
+        for (const b of SMALL_BUILDINGS) {
+          const d = Math.hypot(s.playerX - b.wx, s.playerY - b.wy);
+          if (d < SHOP_ENTER_DISTANCE && d < foundShopDist) {
+            foundShopDist = d;
+            foundShop = b;
+          }
+        }
+        if (foundShop?.label !== nearShopRef.current?.label) {
+          nearShopRef.current = foundShop;
+          setNearShop(foundShop);
+        }
+
+        // Dog AI
+        const dog = dogRef.current;
+        const worldSize2 = WORLD_W * TILE;
+        dog.wanderTimer -= dt;
+        const distToPlayer = Math.hypot(s.playerX - dog.x, s.playerY - dog.y);
+
+        if (distToPlayer < DOG_EXCITE_DIST) {
+          // Excited — run toward player
+          const ddx = s.playerX - dog.x, ddy = s.playerY - dog.y;
+          const dlen = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+          dog.vx = (ddx / dlen) * DOG_SPEED * 1.3;
+          dog.vy = (ddy / dlen) * DOG_SPEED * 1.3;
+        } else if (dog.wanderTimer <= 0) {
+          const angle = Math.random() * Math.PI * 2;
+          dog.vx = Math.cos(angle) * DOG_SPEED;
+          dog.vy = Math.sin(angle) * DOG_SPEED;
+          dog.wanderTimer = 2 + Math.random() * 3;
+        }
+        dog.x = Math.max(60, Math.min(worldSize2 - 60, dog.x + dog.vx * dt));
+        dog.y = Math.max(60, Math.min(worldSize2 - 60, dog.y + dog.vy * dt));
+        if (dog.x <= 60 || dog.x >= worldSize2 - 60) { dog.vx *= -1; dog.wanderTimer = 0; }
+        if (dog.y <= 60 || dog.y >= worldSize2 - 60) { dog.vy *= -1; dog.wanderTimer = 0; }
+        if (Math.abs(dog.vx) > 0.1) dog.facing = dog.vx > 0 ? 1 : -1;
+        if (dog.happyTimer > 0) dog.happyTimer -= dt;
+
+        const isNearDog = distToPlayer < DOG_PET_DISTANCE;
+        if (isNearDog !== nearDogRef.current) {
+          nearDogRef.current = isNearDog;
+          setNearDog(isNearDog);
+        }
+      }
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      const camX = canvas.width / 2 - s.playerX;
+      const camY = canvas.height / 2 - s.playerY;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#166534";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.translate(camX, camY);
+
+      // World ground
+      drawGrass(ctx);
+
+      // ── Lamps (always rendered, glow at ground level first)
+      for (const [lx, ly] of LAMP_POSITIONS) {
+        drawLamp(ctx, lx as number, ly as number, now);
+      }
+
+      // ── Benches (low, always)
+      for (const b of BENCH_POSITIONS) {
+        drawBench(ctx, b.x, b.y);
+      }
+
+      // ── Flowers (always)
+      for (const [fx, fy, fc, ft, fs] of FLOWER_POSITIONS) {
+        drawFlower(ctx, fx, fy, fc, ft as string, fs as number);
+      }
+
+      // ── Trees behind player
+      for (const [tx, ty] of TREE_POSITIONS) {
+        if ((ty as number) > s.playerY) continue;
+        drawTree(ctx, tx as number, ty as number);
+      }
+
+      // ── Small buildings behind player
+      for (const b of SMALL_BUILDINGS) {
+        if (b.wy + 40 > s.playerY) continue;
+        drawSmallBuilding(ctx, b, nearShopRef.current?.label === b.label);
+      }
+
+      // ── Main houses behind player
+      for (const opt of DATE_OPTIONS) {
+        const hp = HOUSE_POSITIONS[opt.id];
+        if (!hp || hp.wy + 60 > s.playerY) continue;
+        const near = nearOptionRef.current?.id === opt.id;
+        if (opt.id === "diy") drawShed(ctx, opt, hp.wx, hp.wy, near, now);
+        else if (opt.id === "casino") drawCasino(ctx, opt, hp.wx, hp.wy, near, now);
+        else drawHouse(ctx, hp.wx, hp.wy, opt, near, now);
+      }
+
+      // ── Dog and Player — z-sorted together
+      const dog = dogRef.current;
+      if (dog.y < s.playerY) {
+        drawDog(ctx, dog.x, dog.y, now, dog.happyTimer, dog.facing);
+        drawPlayer(ctx, s.playerX, s.playerY, s.bobY, charConfigRef.current);
+      } else {
+        drawPlayer(ctx, s.playerX, s.playerY, s.bobY, charConfigRef.current);
+        drawDog(ctx, dog.x, dog.y, now, dog.happyTimer, dog.facing);
+      }
+
+      // ── Main houses in front of player
+      for (const opt of DATE_OPTIONS) {
+        const hp = HOUSE_POSITIONS[opt.id];
+        if (!hp || hp.wy + 60 <= s.playerY) continue;
+        const near = nearOptionRef.current?.id === opt.id;
+        if (opt.id === "diy") drawShed(ctx, opt, hp.wx, hp.wy, near, now);
+        else if (opt.id === "casino") drawCasino(ctx, opt, hp.wx, hp.wy, near, now);
+        else drawHouse(ctx, hp.wx, hp.wy, opt, near, now);
+      }
+
+      // ── Small buildings in front of player
+      for (const b of SMALL_BUILDINGS) {
+        if (b.wy + 40 <= s.playerY) continue;
+        drawSmallBuilding(ctx, b, nearShopRef.current?.label === b.label);
+      }
+
+      // ── Trees in front of player
+      for (const [tx, ty] of TREE_POSITIONS) {
+        if ((ty as number) <= s.playerY) continue;
+        drawTree(ctx, tx as number, ty as number);
+      }
+
+      ctx.restore();
+
+      animRef.current = requestAnimationFrame(loop);
+    };
+
+    animRef.current = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(animRef.current);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
+
+  const handleEnter = useCallback(() => {
+    const opt = nearOptionRef.current;
+    if (!opt) return;
+    if (opt.id === "casino") {
+      setCasinoOpen(true);
+    } else {
+      setActiveOption(opt);
+      activeOptionRef.current = opt;
+    }
+  }, []);
+
+  const handleEnterShop = useCallback(() => {
+    if (nearShopRef.current) {
+      setActiveShop(nearShopRef.current);
+      activeShopRef.current = nearShopRef.current;
+    }
+  }, []);
+
+  const anyOpen = !!activeOption || !!activeShop || customizerOpen || casinoOpen;
+
+  return (
+    <div style={{ width: "100%", height: "100%", position: "relative", overflow: "hidden" }}>
+      <canvas
+        ref={canvasRef}
+        style={{ display: "block", imageRendering: "pixelated" }}
+        tabIndex={0}
+      />
+
+      {/* Gear / Customizer button */}
+      <button
+        onClick={() => setCustomizerOpen(true)}
+        title="Customize character"
+        style={{
+          position: "fixed",
+          top: "1rem",
+          right: "1rem",
+          zIndex: 50,
+          width: "42px",
+          height: "42px",
+          borderRadius: "50%",
+          background: "rgba(0,0,0,0.55)",
+          border: "1.5px solid rgba(255,255,255,0.25)",
+          backdropFilter: "blur(6px)",
+          color: "#fff",
+          fontSize: "1.2rem",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          WebkitTapHighlightColor: "transparent",
+          transition: "transform 0.2s",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.transform = "rotate(30deg) scale(1.1)")}
+        onMouseLeave={(e) => (e.currentTarget.style.transform = "")}
+      >
+        ⚙️
+      </button>
+      <HUD
+        nearOption={anyOpen ? null : nearOption}
+        onEnter={handleEnter}
+      />
+
+      {/* Pet dog prompt */}
+      {!anyOpen && nearDog && !nearOption && !nearShop && (
+        <div style={{
+          position: "fixed",
+          bottom: isMobile ? "9rem" : "2.5rem",
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 21,
+          animation: "floatUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)",
+        }}>
+          <button
+            onClick={() => { dogRef.current.happyTimer = 1.8; }}
+            onTouchEnd={(e) => { e.preventDefault(); dogRef.current.happyTimer = 1.8; }}
+            style={{
+              background: "linear-gradient(135deg, #d97706cc, #92400ecc)",
+              border: "2px solid #fbbf24",
+              borderRadius: "50px",
+              padding: isMobile ? "1rem 2.2rem" : "0.8rem 2rem",
+              color: "#fff",
+              fontSize: isMobile ? "1.1rem" : "1rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              fontFamily: "Georgia, serif",
+              letterSpacing: "0.03em",
+              boxShadow: "0 0 24px #d9770688",
+              display: "flex", alignItems: "center", gap: "0.5rem",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            <span style={{ fontSize: isMobile ? "1.5rem" : "1.3rem" }}>🐕</span>
+            Pet the dog!
+            {!isMobile && <span style={{ fontSize: "0.75rem", opacity: 0.8, fontFamily: "sans-serif" }}>[E]</span>}
+          </button>
+        </div>
+      )}
+
+      {/* Shop enter prompt */}
+      {!anyOpen && nearShop && !nearOption && (
+        <div style={{
+          position: "fixed",
+          bottom: isMobile ? "9rem" : "2.5rem",
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 21,
+          animation: "floatUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)",
+        }}>
+          <button
+            onClick={handleEnterShop}
+            onTouchEnd={(e) => { e.preventDefault(); handleEnterShop(); }}
+            style={{
+              background: `linear-gradient(135deg, ${nearShop.color}cc, ${nearShop.roofColor}cc)`,
+              border: `2px solid ${nearShop.color}`,
+              borderRadius: "50px",
+              padding: isMobile ? "1rem 2.2rem" : "0.8rem 2rem",
+              color: "#fff",
+              fontSize: isMobile ? "1.1rem" : "1rem",
+              fontWeight: "bold",
+              cursor: "pointer",
+              fontFamily: "Georgia, serif",
+              letterSpacing: "0.03em",
+              boxShadow: `0 0 24px ${nearShop.color}88`,
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            <span style={{ fontSize: isMobile ? "1.5rem" : "1.3rem" }}>{nearShop.emoji}</span>
+            Visit {nearShop.label}
+            {!isMobile && <span style={{ fontSize: "0.75rem", opacity: 0.8, fontFamily: "sans-serif" }}>[E]</span>}
+          </button>
+        </div>
+      )}
+
+      {isMobile && !anyOpen && (
+        <Joystick onChange={handleJoystick} />
+      )}
+
+      {activeOption && activeOption.id !== "casino" && (
+        <DateCard
+          option={activeOption}
+          onClose={() => {
+            setActiveOption(null);
+            activeOptionRef.current = null;
+          }}
+        />
+      )}
+
+      {activeShop && (
+        <ShopNote
+          shop={activeShop}
+          onClose={() => {
+            setActiveShop(null);
+            activeShopRef.current = null;
+          }}
+        />
+      )}
+
+      {customizerOpen && (
+        <Customizer
+          config={charConfig}
+          onChange={(cfg) => {
+            setCharConfig(cfg);
+            charConfigRef.current = cfg;
+          }}
+          onClose={() => setCustomizerOpen(false)}
+        />
+      )}
+
+      {casinoOpen && (
+        <Casino onClose={() => setCasinoOpen(false)} />
+      )}
+    </div>
+  );
+}
